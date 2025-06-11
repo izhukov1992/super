@@ -64,6 +64,10 @@ type CompactRequest struct {
 	ObjectIDs []ksuid.KSUID `super:"object_ids"`
 }
 
+type CompactAllRequest struct {
+	ObjectIDs []string `super:"object_ids"`
+}
+
 type DeleteRequest struct {
 	ObjectIDs []string `super:"object_ids"`
 	Where     string   `super:"where"`

@@ -535,6 +535,44 @@ func handleCompact(c *Core, w *ResponseWriter, r *Request) {
 	})
 }
 
+func handleCompactNew(c *Core, w *ResponseWriter, r *Request) {
+	var req api.CompactAllRequest
+	if !r.Unmarshal(w, &req) {
+		return
+	}
+	ids, err := lakeparse.ParseIDs(req.ObjectIDs)
+	if err != nil {
+		return
+	}
+	branch, ok := r.StringFromPath(w, "branch")
+	if !ok {
+		return
+	}
+	writeVectors, ok := r.BoolFromQuery(w, "vectors")
+	if !ok {
+		return
+	}
+	message, ok := r.decodeCommitMessage(w)
+	if !ok {
+		return
+	}
+	pool, ok := r.openPool(w, c.root)
+	if !ok {
+		return
+	}
+	commit, err := exec.Compact(r.Context(), c.root, pool, branch, ids, writeVectors, message.Author, message.Body, message.Meta)
+	if err != nil {
+		w.Error(err)
+		return
+	}
+	w.Respond(http.StatusOK, api.CommitResponse{Commit: commit})
+	c.publishEvent(w, "branch-commit", api.EventBranchCommit{
+		CommitID: commit,
+		PoolID:   pool.ID,
+		Branch:   branch,
+	})
+}
+
 func handleDelete(c *Core, w *ResponseWriter, r *Request) {
 	branchName, ok := r.StringFromPath(w, "branch")
 	if !ok {
