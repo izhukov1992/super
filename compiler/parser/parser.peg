@@ -1951,6 +1951,7 @@ SelectExpr
     body:(
         SetOperation
       / Select
+      / FromSelect
       / Values
       / "(" __ s:SQLPipe __")"      { return s, nil }
     )
@@ -2011,6 +2012,39 @@ Select
       return sel, nil
     }
 
+FromSelect
+  = from:FromOp _ SELECT 
+    distinct:OptDistinct
+    value:OptSelectValue
+    //XXX for whitespace in front of target need it only if it begins with 
+    // an identifier, e.g., select(1); is ok
+    _ selection:Selection
+    where:OptWhereClause
+    group:OptGroupClause
+    having:OptHavingClause
+    // XXX NOTYET OptQualifyClause
+    // XXX NOTYET OptWindowClause
+    {
+      sel := &ast.Select{
+          Kind: "Select",
+          Distinct: distinct.(bool),
+          Value: value.(bool),
+          Selection: selection.(ast.Selection),
+          From: from.(*ast.From),
+          Loc: loc(c),
+      }
+      if where != nil {
+        sel.Where = where.(ast.Expr)
+      }
+      if group != nil {
+        sel.GroupBy = sliceOf[ast.Expr](group)
+      }
+      if having != nil {
+        sel.Having = having.(ast.Expr)
+      }
+      return sel, nil
+    }
+
 Values
   = VALUES _ exprs:Exprs {
       return &ast.Values{
@@ -2031,11 +2065,11 @@ OptSelectValue
   / ""                  { return false, nil }
 
 OptWithClause 
-  = WithClause 
+  = WithClause
   / ""          { return nil, nil }
 
 WithClause 
-  = _ WITH r:OptRecursive _ ctes:CteList {
+  = WITH r:OptRecursive _ ctes:CteList __ {
         return &ast.With{
             Kind: "With",
             Recursive: r.(bool), 
@@ -2055,9 +2089,9 @@ CteList = first:Cte rest:( __ "," __ cte:Cte { return cte, nil} )* {
 Cte
   = name:SQLIdentifier _ AS m:OptMaterialized __ "(" __ s:SQLPipe __ ")" {
         return ast.CTE{
-            Name: name.(*ast.ID).Name,
-            Materialized: m.(*bool),
-            Op: s.(ast.Op),
+            Name: name.(*ast.ID),
+            Materialized: m.(bool),
+            Body: s.(*ast.SQLPipe),
             Loc: loc(c),
         }, nil
     }

@@ -3,7 +3,9 @@ package semantic
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 
 	"github.com/brimdata/super"
 	"github.com/brimdata/super/compiler/ast"
@@ -11,6 +13,7 @@ import (
 	"github.com/brimdata/super/compiler/kernel"
 	"github.com/brimdata/super/order"
 	"github.com/brimdata/super/pkg/field"
+	"github.com/brimdata/super/sup"
 	"github.com/brimdata/super/zfmt"
 )
 
@@ -372,7 +375,7 @@ func (a *analyzer) semValues(values *ast.Values, seq dag.Seq) (dag.Seq, schema) 
 		Kind:  "Yield",
 		Exprs: exprs,
 	})
-	return seq, &anonSchema{columns}
+	return seq, &staticSchema{columns: columns}
 }
 
 func (a *analyzer) genDistinct(e dag.Expr, seq dag.Seq) dag.Seq {
@@ -425,14 +428,10 @@ func derefSchemaWithAlias(insch schema, alias *ast.TableAlias, inseq dag.Seq) (d
 	if alias == nil || len(alias.Columns) == 0 {
 		return seq, sch, nil
 	}
-	switch sch := sch.(type) {
-	case *anonSchema:
+	if sch, ok := sch.(*staticSchema); ok {
 		return mapColumns(sch.columns, alias, seq)
-	case *staticSchema:
-		return mapColumns(sch.columns, alias, seq)
-	default:
-		return seq, sch, errors.New("cannot apply column aliases to dynamically typed data")
 	}
+	return seq, sch, errors.New("cannot apply column aliases to dynamically typed data")
 }
 
 func mapColumns(in []string, alias *ast.TableAlias, seq dag.Seq) (dag.Seq, schema, error) {
@@ -500,6 +499,23 @@ func (a *analyzer) semSQLOp(op ast.Op, seq dag.Seq) (dag.Seq, schema) {
 			out = append(out, &dag.Head{Kind: "Head", Count: a.evalPositiveInteger(op.Limit)})
 		}
 		return out, schema
+	case *ast.With:
+		if op.Recursive {
+			a.error(op, errors.New("recursive WITH queries not currently supported"))
+		}
+		old := a.scope.ctes
+		a.scope.ctes = maps.Clone(a.scope.ctes)
+		defer func() { a.scope.ctes = old }()
+		for _, c := range op.CTEs {
+			// XXX Materialized option not currently supported.
+			name := strings.ToLower(c.Name.Name)
+			if _, ok := a.scope.ctes[name]; ok {
+				a.error(c.Name, errors.New("duplicate WITH clause name"))
+			}
+			seq, schema := a.semSQLPipe(c.Body, nil, &ast.TableAlias{Name: c.Name.Name})
+			a.scope.ctes[name] = &cte{seq, schema}
+		}
+		return a.semSQLOp(op.Body, seq)
 	default:
 		panic(fmt.Sprintf("semSQLOp: unknown op: %#v", op))
 	}
@@ -623,6 +639,13 @@ func (a *analyzer) semGroupBy(sch *selectSchema, in []ast.Expr) []exprloc {
 	var funcs aggfuncs
 	for k, expr := range in {
 		e := a.semExprSchema(sch, expr)
+		if a.isOrdinal(e) {
+			e = &dag.IndexExpr{
+				Kind:  "IndexExpr",
+				Expr:  &dag.This{Kind: "This", Path: []string{"in"}},
+				Index: e,
+			}
+		}
 		// Grouping expressions can't have agg funcs so we parse as a column
 		// and see if any agg functions were found.
 		c, _ := newColumn("", in[k], e, &funcs)
@@ -634,8 +657,16 @@ func (a *analyzer) semGroupBy(sch *selectSchema, in []ast.Expr) []exprloc {
 	return out
 }
 
+func (a *analyzer) isOrdinal(e dag.Expr) bool {
+	if literal, ok := e.(*dag.Literal); ok {
+		v := sup.MustParseValue(a.sctx, literal.Value)
+		return super.IsInteger(v.Type().ID())
+	}
+	return false
+}
+
 func (a *analyzer) semProjection(sch *selectSchema, args []ast.AsExpr, funcs *aggfuncs) projection {
-	out := &anonSchema{}
+	out := &staticSchema{}
 	sch.out = out
 	labels := make(map[string]struct{})
 	var proj projection

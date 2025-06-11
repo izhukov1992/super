@@ -14,14 +14,11 @@ type schema interface {
 	resolveColumn(col string) (field.Path, error)
 	resolveTable(table string) (schema, field.Path, error)
 	deref(name string) (dag.Expr, schema)
+	String() string
 }
 
 type staticSchema struct {
 	name    string
-	columns []string
-}
-
-type anonSchema struct {
 	columns []string
 }
 
@@ -41,7 +38,6 @@ type joinSchema struct {
 
 func (s *staticSchema) Name() string  { return s.name }
 func (d *dynamicSchema) Name() string { return d.name }
-func (*anonSchema) Name() string      { return "" }
 func (*selectSchema) Name() string    { return "" }
 func (*joinSchema) Name() string      { return "" }
 
@@ -52,13 +48,6 @@ func badSchema() schema {
 func (d *dynamicSchema) resolveTable(table string) (schema, field.Path, error) {
 	if table == "" || strings.EqualFold(d.name, table) {
 		return d, nil, nil
-	}
-	return nil, nil, nil
-}
-
-func (a *anonSchema) resolveTable(table string) (schema, field.Path, error) {
-	if table == "" {
-		return a, nil, nil
 	}
 	return nil, nil, nil
 }
@@ -133,13 +122,6 @@ func (s *staticSchema) resolveColumn(col string) (field.Path, error) {
 	return nil, fmt.Errorf("column %q: does not exist", col)
 }
 
-func (a *anonSchema) resolveColumn(col string) (field.Path, error) {
-	if slices.Contains(a.columns, col) {
-		return field.Path{col}, nil
-	}
-	return nil, fmt.Errorf("column %q: does not exist", col)
-}
-
 func (s *selectSchema) resolveColumn(col string) (field.Path, error) {
 	if s.out != nil {
 		if resolved, _ := s.out.resolveColumn(col); resolved != nil {
@@ -187,20 +169,16 @@ func (s *staticSchema) deref(name string) (dag.Expr, schema) {
 	return nil, s
 }
 
-func (a *anonSchema) deref(name string) (dag.Expr, schema) {
-	return nil, a
-}
-
 func (s *selectSchema) deref(name string) (dag.Expr, schema) {
 	if name == "" {
 		// postgres and duckdb oddly do this
 		name = "unamed_subquery"
 	}
 	var outSchema schema
-	if anon, ok := s.out.(*anonSchema); ok {
+	if sch, ok := s.out.(*staticSchema); ok {
 		// Hide any enclosing schema hierarchy by just exporting the
 		// select columns.
-		outSchema = &staticSchema{name: name, columns: anon.columns}
+		outSchema = &staticSchema{name: name, columns: sch.columns}
 	} else {
 		// This is a select value.
 		// XXX we should eventually have a way to propagate schema info here,
@@ -236,4 +214,20 @@ func joinSpread(left, right dag.Expr) *dag.RecordExpr {
 			},
 		},
 	}
+}
+
+func (s *staticSchema) String() string {
+	return fmt.Sprintf("static <%s>: %s", s.name, strings.Join(s.columns, ", "))
+}
+
+func (d *dynamicSchema) String() string {
+	return fmt.Sprintf("dynamic <%s>", d.name)
+}
+
+func (s *selectSchema) String() string {
+	return fmt.Sprintf("select:\n  in: %s\n  out: %s", s.in, s.out)
+}
+
+func (s *joinSchema) String() string {
+	return fmt.Sprintf("join:\n  left: %s\n  right: %s", s.left, s.right)
 }

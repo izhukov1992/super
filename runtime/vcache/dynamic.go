@@ -59,13 +59,9 @@ func (d *dynamic) load(r io.ReaderAt) ([]uint32, bitvec.Bits) {
 	return tags, bitvec.Zero
 }
 
-type dynamicLoader struct {
-	loader *loader
-	shadow *dynamic
+func (d *dynamic) projectUnordered(vecs []vector.Any, loader *loader, projection field.Projection) []vector.Any {
+	for _, shadow := range d.values {
+		vecs = append(vecs, shadow.project(loader, projection))
+	}
+	return vecs
 }
-
-func (d *dynamicLoader) Load() ([]uint32, bitvec.Bits) {
-	return d.shadow.load(d.loader.r)
-}
-
-var _ vector.Uint32Loader = (*dynamicLoader)(nil)
